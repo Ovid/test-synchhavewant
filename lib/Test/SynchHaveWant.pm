@@ -3,19 +3,25 @@ package Test::SynchHaveWant;
 use warnings;
 use strict;
 
+use Test::Builder;
 use Data::Dumper;
 use Carp 'confess';
 use base 'Exporter';
 our @EXPORT_OK = qw(
   have
   want
+  synch
 );
+
+my %DATA_SECTION_FOR;     # this is the want() data
+my %NEW_DATA_FOR;         # data from have(), if requested
+my %SEEK_POSITION_FOR;    # where to synch the data, if requested
+my %SYNCH_WAS_CALLED;     # calling have/want after this should fail
+my %TIMES_CALLED;         # track how often have/want called
 
 =head1 NAME
 
 Test::SynchHaveWant - Synchronize volatile have/want values for tests
-
-=head1 VERSION
 
 Version 0.01
 
@@ -27,14 +33,13 @@ our $VERSION = '0.01';
 
     use Test::Most;
     use Test::SynchHaveWant qw/
-        have_want
+        have
         want
     /;
 
     my $have = some_complex_data();
-    my $want = want();
 
-    eq_or_diff have_want($have,$want), 'have and want should be the same';
+    eq_or_diff have($have),  want(), 'have and want should be the same';
 
     __DATA__
     [
@@ -46,10 +51,38 @@ our $VERSION = '0.01';
         bless( [ 'this', 'that', 'glarble', 'fetch' ], 'Foobar' ),
     ]
 
-=cut
+If you wish to synch:
 
-my %DATA_SECTION_FOR;
-my %NEW_DATA_FOR;
+    use Test::Most;
+    use Test::SynchHaveWant qw/
+        have
+        want
+        synch
+    /;
+
+    my $have = some_complex_data();
+
+    eq_or_diff have($have),  want(), 'have and want should be the same';
+    is have(0), want(), '0 is 0';
+
+    # note that we can use normal tests
+    my $want = want();
+    isa_ok $want, 'Foobar';
+    is_deeply $have($some_object), $want, '... and the object is the same';
+    synch();
+
+    __DATA__
+    [
+        {
+            'bar' => [ 3, 4 ],
+            'foo' => 1
+        },
+        0,
+        bless( [ 'this', 'that', 'glarble', 'fetch' ], 'Foobar' ),
+    ]
+
+
+=cut
 
 sub _read_data_section {
     my $caller = shift;
@@ -60,6 +93,7 @@ sub _read_data_section {
         confess "__DATA__ section not found for package ($caller)";
     }
 
+    $SEEK_POSITION_FOR{$key} = tell $__DATA__;
     seek $__DATA__, 0, 0;
     my $data_section = join '', <$__DATA__>;
     $data_section =~ s/^.*\n__DATA__\n/\n/s;    # for win32
@@ -105,6 +139,12 @@ EXPERIMENT>.
 Sadly, I've been asked a couple of times why I feel the need to experiment
 with writing tests in this area, but I can't tell you that due to my NDA.
 
+=head1 USAGE
+
+To make this work, you must have a C<__DATA__> section in your code. This
+section should contain L<Data::Dumper> output of an array reference with each
+value being a subsequent expected test result.
+
 =head1 EXPORT
 
 =head2 C<have>
@@ -112,14 +152,22 @@ with writing tests in this area, but I can't tell you that due to my NDA.
  is have($have), want(), 'have should equal want';
 
 Ordinarily this function is a no-op. It merely returns the value it is passed.
-However, if C<< $ENV{SYNCH_HAVE_WANT} >> contains a true value, this function
-will push the have() value on a stack and at the end of the test run, will
-attempt to write the data to the __DATA__ section.
+However, if synch is called at the end of the test run, the values passed to
+this function will be written to the data in the __DATA__ section.
 
 =cut
 
 sub have {
     my $have = shift;
+    my $key  = _get_key();
+    if ( exists $SYNCH_WAS_CALLED{$key} ) {
+        confess "Synch was already called for ($key)";
+    }
+
+    no warnings 'uninitialized';
+    $TIMES_CALLED{$key}{have}++;
+    $NEW_DATA_FOR{$key} ||= [];
+    push @{ $NEW_DATA_FOR{$key} } => $have;
     return $have;
 }
 
@@ -134,14 +182,80 @@ the test results will result in a fatal error.
 
 sub want {
     my $key = _get_key();
+    if ( exists $SYNCH_WAS_CALLED{$key} ) {
+        confess "Synch was already called for ($key)";
+    }
+
     unless ( exists $DATA_SECTION_FOR{$key} ) {
         _read_data_section( scalar caller );
     }
+    no warnings 'uninitialized';
+    $TIMES_CALLED{$key}{want}++;
     my $data_section = $DATA_SECTION_FOR{$key};
     unless (@$data_section) {
         confess("Attempt to read past end of __DATA__ for $0");
     }
     return shift @$data_section;
+}
+
+=head2 C<synch>
+
+    synch();
+
+This function will attempt to take all of the values passed to have() and
+write them out to the __DATA__ section. If C<have()> and C<want()> have been
+called an unequal number of times, this function will die.
+
+Will not attempt to synch the __DATA__ if the tests appear to be passing.
+
+=cut
+
+sub synch {
+    my $key = _get_key();
+
+    my ( $have, $want ) = @{ $TIMES_CALLED{$key} }{qw/have want/};
+
+    unless ( $have == $want ) {
+        confess(
+"have/want not in synch: have was called $have times and want was called $want times"
+        );
+    }
+
+    my $builder = Test::Builder->new;
+    return if $builder->is_passing;
+
+    print STDERR "# Really synch have/want data? (y/N) ";
+    my $response = <STDIN>;
+    unless ( $response =~ /^\s*[yY]/ ) {
+        warn "# Aborting synch ...";
+        return;
+    }
+
+    if ( exists $SYNCH_WAS_CALLED{$key} ) {
+        confess "Synch was already called for ($key)";
+    }
+
+    $SYNCH_WAS_CALLED{$key} = 1;
+    local $Data::Dumper::Indent   = 1;
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Terse    = 1;
+    unless ( exists $SEEK_POSITION_FOR{$key} ) {
+        confess("Panic: seek position for ($key) not found");
+    }
+    my $new_data = $NEW_DATA_FOR{$key};
+    unless ( 'ARRAY' eq ref $new_data ) {
+        confess(
+            "PANIC: new data to write to __DATA__ is not an array reference");
+    }
+    my $position = $SEEK_POSITION_FOR{$key};
+
+    open my $fh, '+<', $0 or confess "Cannot open $0 for writing: $!";
+    seek $fh, $position, 0
+      or confess "Cannot seek to position $position for $0: $!";
+    truncate $fh, tell($fh)
+      or confess "Cannot truncate $0 at position $position: $!";
+    print $fh Dumper($new_data) or confess "Could not print new data to $0: $!";
+    close $fh or confess "Could not close $0: $!";
 }
 
 # XXX eventually I may have to add to this if people start using this

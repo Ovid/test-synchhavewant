@@ -1,12 +1,10 @@
 #!/usr/bin/env perl
 
-package NotMain;
-
 use strict;
 use warnings;
 
-use Test::More tests => 5;
-use Test::SynchHaveWant qw(have want);
+use Test::More tests => 6;
+use Test::SynchHaveWant qw(have want synch);
 
 is_deeply have({
     foo => 1,
@@ -30,6 +28,11 @@ eval { want() };
 my $error = $@;
 like $error, qr/^Attempt to read past end of __DATA__/,
     '... but we get a fatal error when we attempt to read past the end of the data';
+
+eval { synch() };
+$error = $@;
+like $error, qr{^have/want not in synch: have was called \d+ times and want was called \d+ times},
+    'Trying to synch with have/want be called an unequal number of times should fail';
 
 __DATA__
 [
