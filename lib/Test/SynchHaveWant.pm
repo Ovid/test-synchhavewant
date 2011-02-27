@@ -121,11 +121,14 @@ what's going on, go ahead and use it at your own risk.
 =head1 DESCRIPTION
 
 Sometimes you have extremely volatile data/code and you I<know> your tests are
-correct even though they've failed due to subtle differences in how data is
-created.  The first pass I had at solving this problem was to effectively
-compute the edit distance for data structures, but even that failed as
-differences emerged over time (see
-L<http://blogs.perl.org/users/ovid/2011/02/is-almost.html>).
+correct even though they've failed because the code has changed or the
+underlying data has been altered. Ordinarily, you never, never want your tests
+to be so fragile. You want to figure out some way of mocking your test data or
+isolating functional units in your code for testing.
+
+The first pass I had at solving this problem was to effectively compute the
+edit distance for data structures, but even that failed as differences emerged
+over time (see L<http://blogs.perl.org/users/ovid/2011/02/is-almost.html>).
 
 For this module, we're giving devs a chance to rewrite their test results on
 the fly, assuming that the new results of their code is correct.
@@ -136,14 +139,61 @@ you to have bogus tests because you may incorrectly assume that the new data
 you're returning is correct.  That's why this is a B<BIG, FAT, DANGEROUS
 EXPERIMENT>.
 
-Sadly, I've been asked a couple of times why I feel the need to experiment
-with writing tests in this area, but I can't tell you that due to my NDA.
+I've been asked a couple of times why I feel the need to experiment with
+writing "fragile" tests but I can't tell you due to my NDA.
+
+=head1 WHY IS OVID BEING STUPID?
+
+Tests should not be as fragile as indicated here. You should mock up your test
+data or find ways of isolating functionality to make your tests more robust.
+
+Not everyone has that luxury. If you insist that everyone does have that
+luxury, be aware that the real world of "these are the constraints I have" and
+the fantasy world of "the way I like things is the only way things should be
+done" aren't on speaking terms to one another.
 
 =head1 USAGE
 
 To make this work, you must have a C<__DATA__> section in your code. This
-section should contain L<Data::Dumper> output of an array reference with each
-value being a subsequent expected test result.
+section should contain terse L<Data::Dumper> output of an array reference with each
+value being a subsequent expected test result. Every time C<want()> is called,
+the next value in this array ref is returned:
+
+    is have($foo),         want();    # 3
+    is_deeply have($aref), want();    # ['foo','bar']
+    is have($idiot),       want();    # 'ovid'
+    __DATA__
+    [
+       3,
+       [ qw/foo bar/ ],
+       'ovid',
+    ]
+
+The C<have()> function must be called as often as the C<want()> function (and
+in sequence) to track the values we have received. 
+
+If desired, the C<synch()> function may be exported and called at the end of
+the test run. If any tests failed (C<< ! Test::Builder->new->is_passing >>),
+then we attempt to write all values passed to C<have()> to the C<__DATA__>
+section.
+
+C<synch()> will fail if have/want have been called a different number of times
+or if it has already been called. C<have()> and C<want()> will fail if
+C<synch()> has already been called.
+
+It goes without saying that this means you must have a deterministic order for
+your tests. Bad:
+
+    while ( my ( $key, $value ) = each %test ) {
+        is_deeply have( some_func( $key, $value ) ), want();
+    }
+
+Good:
+
+    foreach my $key  ( sort keys %test ) {
+        my $value = $test{$key};
+        is_deeply have( some_func( $key, $value ) ), want();
+    }
 
 =head1 EXPORT
 
