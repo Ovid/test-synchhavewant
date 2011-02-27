@@ -23,6 +23,8 @@ my %TIMES_CALLED;         # track how often have/want called
 
 Test::SynchHaveWant - Synchronize volatile have/want values for tests
 
+=head1 VERSION
+
 Version 0.01
 
 =cut
