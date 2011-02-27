@@ -258,6 +258,11 @@ called an unequal number of times, this function will die.
 
 Will not attempt to synch the __DATA__ if the tests appear to be passing.
 
+If tests are not passing, will prompt the user if they really want to synch
+tests results. Only a C<< /^\s*[Yy]/ >> is acceptable. To ensure that we don't
+block on automated systems, we have an alarm set for 10 seconds. After that,
+we merely return without attempting to synch.
+
 =cut
 
 sub synch {
@@ -275,7 +280,19 @@ sub synch {
     return if $builder->is_passing;
 
     print STDERR "# Really synch have/want data? (y/N) ";
-    my $response = <STDIN>;
+
+    my $response;
+    eval {
+        local $SIG{ALRM} = sub { die "Died while bored" };
+
+        alarm 10;
+        $response = <STDIN>;
+        alarm 0;
+    };
+    if (my $error = $@) {
+        return if $error =~ /Died while bored/;
+        confess($error);
+    }
     unless ( $response =~ /^\s*[yY]/ ) {
         warn "# Aborting synch ...";
         return;
